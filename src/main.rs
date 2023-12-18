@@ -6,9 +6,13 @@ use serde::Deserialize;
 use log::{error, info, warn};
 use log4rs;
 use regex::Regex;
-use std::sync::Mutex;
+use reqwest::Client;
+use std::sync::{
+    mpsc::{self, Receiver, Sender},
+    Mutex,
+};
+use std::thread;
 use std::time::{Duration, Instant};
-use std::collections::VecDeque;
 use windows::{
     Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, WPARAM},
     Win32::System::LibraryLoader::GetModuleHandleW,
@@ -18,51 +22,25 @@ use windows::{
     },
 };
 
-/* 
-use std::collections::VecDeque;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-
-fn main() {
-    // Create a channel for sending String values
-    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
-
-    // Spawn the consumer thread
-    thread::spawn(move || {
-        while let Ok(value) = rx.recv() {
-            // Print the value received from the main thread
-            println!("Consumed: {}", value);
-        }
-    });
-
-    // The main thread will act as the producer
-    let mut vqueue: VecDeque<String> = VecDeque::new();
-
-    // Simulate adding items to the queue
-    for i in 0..5 {
-        let value = format!("Item {}", i);
-        vqueue.push_back(value.clone());
-        // Send the value to the consumer thread
-        tx.send(value).unwrap();
-
-        // Sleep to simulate work
-        thread::sleep(std::time::Duration::from_secs(1));
-    }
-}
-*/
-
 const CONFIG_FILE: &str = "config/config.toml";
 const LOG_CONFIG_FILE: &str = "config/log4rs.yaml";
 
 lazy_static::lazy_static! {
     static ref CONFIG: MonitorConfig = load_config(CONFIG_FILE);
-    static ref DIGIT_PATTERN: Regex = Regex::new(&CONFIG.regex.clone().unwrap()).unwrap();
+    static ref TIME_THRESHOLD_RAW: u64 = CONFIG.time_threshold.unwrap();
+    static ref TIME_THRESHOLD: Duration = Duration::from_millis(*TIME_THRESHOLD_RAW);
+    static ref CLIENT_SN: String = CONFIG.client_sn.clone().unwrap();
+    static ref SERVER_URL: String = CONFIG.server_url.clone().unwrap();
+    static ref MODE: MonitorMode = CONFIG.mode.clone().unwrap();
+    static ref REGEX_RAW: String = CONFIG.regex.clone().unwrap();
+    static ref REGEX_PATTERN: Regex = Regex::new((*REGEX_RAW).as_str()).unwrap();
     static ref INPUT_STATE: Mutex<InputState> = Mutex::new(InputState {
         buffer: String::new(),
         start_time: Instant::now(),
         timer_started: false,
     });
 }
+static mut TX: Option<&mut Sender<String>> = None;
 
 struct InputState {
     buffer: String,
@@ -108,12 +86,11 @@ unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: L
             input_state.buffer.push(vk_code);
 
             let elapse = input_state.start_time.elapsed();
-            let time_threshold = Duration::from_millis(CONFIG.time_threshold.unwrap());
-            if DIGIT_PATTERN.is_match(&input_state.buffer) && elapse <= time_threshold {
+            if REGEX_PATTERN.is_match(&input_state.buffer) && elapse <= *TIME_THRESHOLD {
                 info!("检测到有效的扫码枪输入: {}", input_state.buffer);
                 input_state.buffer.clear();
                 input_state.timer_started = false;
-            } else if elapse > time_threshold {
+            } else if elapse > *TIME_THRESHOLD {
                 input_state.buffer.clear();
                 input_state.timer_started = false;
             }
@@ -127,19 +104,38 @@ unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: L
     }
 }
 
-fn my_log_init() {
+fn log_init() {
     log4rs::init_file(LOG_CONFIG_FILE, Default::default()).unwrap();
     info!("Barcode Scanner Monitor 程序初始化");
-    info!("客户端序列号: {}", CONFIG.client_sn.clone().unwrap());
-    info!("监控模式: {:?}", CONFIG.mode.clone().unwrap());
-    info!("正则表达式: {}", CONFIG.regex.clone().unwrap());
-    info!("扫码枪时间阈值: {}ms", CONFIG.time_threshold.unwrap());
-    info!("后台接口地址: {}", CONFIG.server_url.clone().unwrap());
-    info!("程序初始化完成");
+    info!("客户端序列号: {}", *CLIENT_SN);
+    info!("监控模式: {:?}", *MODE);
+    info!("正则表达式: {}", *REGEX_RAW);
+    info!("扫码枪时间阈值: {}ms", *TIME_THRESHOLD_RAW);
+    info!("后台接口地址: {}", *SERVER_URL);
+    info!("Barcode Scanner Monitor 程序初始化完成");
 }
 
 fn main() -> windows::core::Result<()> {
-    my_log_init();
+    log_init();
+
+    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    unsafe {
+        TX = Some(Box::leak(Box::new(tx)));
+    }
+
+    thread::spawn(async move || -> Result<(), Box<dyn std::error::Error>> {
+        let client = Client::new();
+        while let Ok(value) = rx.recv() {
+            let res = client
+                .get(*SERVER_URL)
+                .query(&[("code", value), ("sn", *CLIENT_SN)])
+                .await?
+                .text()
+                .await?;
+            info!("Response: {}", res);
+        }
+        Ok(())
+    });
 
     unsafe {
         let h_instance = GetModuleHandleW(None).unwrap();

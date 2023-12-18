@@ -13,6 +13,7 @@ dependencies = [
  "regex",
  "reqwest",
  "serde",
+ "tokio",
  "windows",
 ]
 

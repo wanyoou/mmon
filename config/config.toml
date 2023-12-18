@@ -3,7 +3,8 @@ server_url = "http://qcsdemo.cleartv.cn/qcs/backend/hospital/report/scan-code"
 
 # 正则表达式，匹配扫码内容
 # 由单引号包裹以避免转义
-regex = '^\d{10}$'
+# '\r?\n' 匹配换行符
+regex = '^\d{10}\r?\n'
 
 # 客户端sn
 client_sn = "default"
