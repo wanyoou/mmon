@@ -1,0 +1,27 @@
+# !!!!!!!! WARNING !!!!!!!!!!!!!!!!!
+# 这是日志配置，请勿随意修改，否则会导致日志无法正常输出
+# !!!!!!!! WARNING !!!!!!!!!!!!!!!!!
+
+appenders:
+  rollingfile:
+    kind: rolling_file
+    path: "log/log.log"
+    encoder:
+      pattern: "[{d(%Y-%m-%dT%H:%M:%S%.6f)} {h({l}):<5.5}] {m}{n}"
+    policy:
+      trigger:
+        kind: time
+        limit: 1 day
+      roller:
+        kind: fixed_window
+        pattern: "log/old-{}.log"
+        base: 1
+
+        # 最多保存几天的日志文件，可以根据需求修改
+        # 默认为 3
+        count: 3
+
+root:
+  level: info
+  appenders:
+    - rollingfile

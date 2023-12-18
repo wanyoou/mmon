@@ -8,8 +8,7 @@ regex = '^\d{10}$'
 # 客户端sn
 client_sn = "default"
 
-# 日志回滚天数
-logs_day = 3
+# 日志回滚天数请至同目录下的 log4rs.yaml 配置文件中修改
 
 # 判断扫码枪输入的时间阈值，单位 ms
 time_threshold = 40
