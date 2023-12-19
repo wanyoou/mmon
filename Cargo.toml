@@ -11,7 +11,11 @@ lazy_static = "1.4.0"
 log = "0.4.20"
 log4rs = { git = "https://github.com/Dirreke/log4rs", branch = "time-triger" }
 regex = "1.10.2"
-reqwest = { version = "0.11.22", features = ["json"] }
+reqwest = { version = "0.11.22", features = ["blocking"] }
 serde = "1.0.193"
-tokio = "1.35.0"
 windows = { version = "0.52.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System", "Win32_System_LibraryLoader"] }
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "s"

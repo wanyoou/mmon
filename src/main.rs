@@ -3,10 +3,10 @@
 use config::Config;
 use serde::Deserialize;
 
-use log::{error, info, warn};
+use log::{error, info};
 use log4rs;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::blocking::Client;
 use std::sync::{
     mpsc::{self, Receiver, Sender},
     Mutex,
@@ -26,14 +26,14 @@ const CONFIG_FILE: &str = "config/config.toml";
 const LOG_CONFIG_FILE: &str = "config/log4rs.yaml";
 
 lazy_static::lazy_static! {
-    static ref CONFIG: MonitorConfig = load_config(CONFIG_FILE);
+    static ref CONFIG: MonitorConfig = MonitorConfig::new(CONFIG_FILE);
     static ref TIME_THRESHOLD_RAW: u64 = CONFIG.time_threshold.unwrap();
     static ref TIME_THRESHOLD: Duration = Duration::from_millis(*TIME_THRESHOLD_RAW);
     static ref CLIENT_SN: String = CONFIG.client_sn.clone().unwrap();
     static ref SERVER_URL: String = CONFIG.server_url.clone().unwrap();
-    static ref MODE: MonitorMode = CONFIG.mode.clone().unwrap();
     static ref REGEX_RAW: String = CONFIG.regex.clone().unwrap();
     static ref REGEX_PATTERN: Regex = Regex::new((*REGEX_RAW).as_str()).unwrap();
+    static ref MODE: MonitorMode = CONFIG.mode.clone().unwrap();
     static ref INPUT_STATE: Mutex<InputState> = Mutex::new(InputState {
         buffer: String::new(),
         start_time: Instant::now(),
@@ -63,13 +63,15 @@ struct MonitorConfig {
     mode: Option<MonitorMode>,   // 监控模式
 }
 
-fn load_config(path: &str) -> MonitorConfig {
-    Config::builder()
-        .add_source(config::File::with_name(path))
-        .build()
-        .unwrap()
-        .try_deserialize::<MonitorConfig>()
-        .expect("Failed to load config")
+impl MonitorConfig {
+    fn new(path: &str) -> MonitorConfig {
+        Config::builder()
+            .add_source(config::File::with_name(path))
+            .build()
+            .unwrap()
+            .try_deserialize::<MonitorConfig>()
+            .expect("Failed to load config")
+    }
 }
 
 unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
@@ -84,10 +86,13 @@ unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: L
                 input_state.timer_started = true;
             }
             input_state.buffer.push(vk_code);
+            info!("{}", input_state.buffer);
 
             let elapse = input_state.start_time.elapsed();
             if REGEX_PATTERN.is_match(&input_state.buffer) && elapse <= *TIME_THRESHOLD {
-                info!("检测到有效的扫码枪输入: {}", input_state.buffer);
+                let input_valid = input_state.buffer.trim_end();
+                info!("检测到有效的扫码枪输入: {}", input_valid);
+                TX.as_ref().unwrap().send(input_valid.to_string()).unwrap();
                 input_state.buffer.clear();
                 input_state.timer_started = false;
             } else if elapse > *TIME_THRESHOLD {
@@ -97,7 +102,7 @@ unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: L
         }
     }
 
-    if let MonitorMode::Passthrough = CONFIG.mode.clone().unwrap() {
+    if let MonitorMode::Passthrough = *MODE {
         CallNextHookEx(HHOOK(0), n_code, w_param, l_param)
     } else {
         LRESULT(0)
@@ -123,16 +128,23 @@ fn main() -> windows::core::Result<()> {
         TX = Some(Box::leak(Box::new(tx)));
     }
 
-    thread::spawn(async move || -> Result<(), Box<dyn std::error::Error>> {
+    thread::spawn(move || -> reqwest::Result<()> {
+        let mut req;
+        let mut res;
         let client = Client::new();
         while let Ok(value) = rx.recv() {
-            let res = client
-                .get(*SERVER_URL)
-                .query(&[("code", value), ("sn", *CLIENT_SN)])
-                .await?
-                .text()
-                .await?;
-            info!("Response: {}", res);
+            req = client
+                .get((*SERVER_URL).as_str())
+                .query(&[("code", value.as_str()), ("sn", (*CLIENT_SN).as_str())])
+                .timeout(Duration::from_secs(3));
+            info!("GET Request: {:?}", req);
+
+            res = req.send()?;
+            if res.status().is_success() {
+                info!("GET Response: {}", res.text()?);
+            } else {
+                error!("GET Response Error. Status: {:?}", res.status());
+            }
         }
         Ok(())
     });

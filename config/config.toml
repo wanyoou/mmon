@@ -3,8 +3,8 @@ server_url = "http://qcsdemo.cleartv.cn/qcs/backend/hospital/report/scan-code"
 
 # 正则表达式，匹配扫码内容
 # 由单引号包裹以避免转义
-# '\r?\n' 匹配换行符
-regex = '^\d{10}\r?\n'
+# '\r' 匹配换行符
+regex = '^\d{10}\r'
 
 # 客户端sn
 client_sn = "default"
@@ -12,7 +12,7 @@ client_sn = "default"
 # 日志回滚天数请至同目录下的 log4rs.yaml 配置文件中修改
 
 # 判断扫码枪输入的时间阈值，单位 ms
-time_threshold = 40
+time_threshold = 10000
 
 # 拦截模式，首字母大写
 #   屏蔽: Block
