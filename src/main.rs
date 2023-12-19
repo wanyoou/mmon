@@ -1,12 +1,12 @@
 #![allow(non_snake_case)]
 
 use config::Config;
-use serde::Deserialize;
-
 use log::{error, info};
 use log4rs;
 use regex::Regex;
 use reqwest::blocking::Client;
+use serde::Deserialize;
+use std::collections::VecDeque;
 use std::sync::{
     mpsc::{self, Receiver, Sender},
     Mutex,
@@ -34,18 +34,13 @@ lazy_static::lazy_static! {
     static ref REGEX_RAW: String = CONFIG.regex.clone().unwrap();
     static ref REGEX_PATTERN: Regex = Regex::new((*REGEX_RAW).as_str()).unwrap();
     static ref MODE: MonitorMode = CONFIG.mode.clone().unwrap();
-    static ref INPUT_STATE: Mutex<InputState> = Mutex::new(InputState {
-        buffer: String::new(),
-        start_time: Instant::now(),
-        timer_started: false,
-    });
+    static ref INPUT_STATE: Mutex<VecDeque<InputState>> = Mutex::new(VecDeque::with_capacity(20));
 }
 static mut TX: Option<&mut Sender<String>> = None;
 
 struct InputState {
     buffer: String,
     start_time: Instant,
-    timer_started: bool,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -74,30 +69,59 @@ impl MonitorConfig {
     }
 }
 
+/**
+ * 每触发一次击键事件，就依次检查已经存在的实例是否超时。
+ * 如果实例超时，就删除超时实例；否则更新实例 buffer，同时检查是否可以成功匹配。
+ * 如果有实例成功匹配，就清空实例队列，删除所有实例；否则新创建一个 InputState 实例。
+ */
 unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
-    if n_code as u32 == HC_ACTION {
+    if (n_code as u32 == HC_ACTION) && (w_param.0 as u32 == WM_KEYDOWN) {
         let kb_struct = *(l_param.0 as *const KBDLLHOOKSTRUCT);
+        let key = kb_struct.vkCode as u8 as char;
+        let mut input_state = INPUT_STATE.lock().unwrap();
 
-        if w_param.0 as u32 == WM_KEYDOWN {
-            let vk_code = kb_struct.vkCode as u8 as char;
-            let mut input_state = INPUT_STATE.lock().unwrap();
-            if !input_state.timer_started {
-                input_state.start_time = Instant::now();
-                input_state.timer_started = true;
+        // 是否已经创建了新实例
+        let mut new_instance = false;
+        if input_state.is_empty() {
+            input_state.push_back(InputState {
+                buffer: String::new(),
+                start_time: Instant::now(),
+            });
+            new_instance = true;
+        }
+
+        let mut timeout_count = 0;
+        let mut match_success = false;
+        for input in input_state.iter_mut() {
+            if input.start_time.elapsed() > *TIME_THRESHOLD {
+                timeout_count += 1;
+            } else {
+                input.buffer.push(key);
+                if REGEX_PATTERN.is_match(&input.buffer) {
+                    let input_valid = input.buffer.trim_end();
+                    info!("检测到有效的扫码枪输入: {}", input_valid);
+                    TX.as_ref().unwrap().send(input_valid.to_string()).unwrap();
+                    match_success = true;
+                    break;
+                }
             }
-            input_state.buffer.push(vk_code);
-            info!("{}", input_state.buffer);
+        }
 
-            let elapse = input_state.start_time.elapsed();
-            if REGEX_PATTERN.is_match(&input_state.buffer) && elapse <= *TIME_THRESHOLD {
-                let input_valid = input_state.buffer.trim_end();
-                info!("检测到有效的扫码枪输入: {}", input_valid);
-                TX.as_ref().unwrap().send(input_valid.to_string()).unwrap();
-                input_state.buffer.clear();
-                input_state.timer_started = false;
-            } else if elapse > *TIME_THRESHOLD {
-                input_state.buffer.clear();
-                input_state.timer_started = false;
+        if match_success {
+            input_state.clear();
+        } else if !new_instance {
+            // 新创建一个实例，排除第一个实例刚刚创建过的情况
+            input_state.push_back(InputState {
+                buffer: key.to_string(),
+                start_time: Instant::now(),
+            })
+        }
+
+        // 删除超时实例
+        if !match_success && timeout_count > 0 {
+            while timeout_count > 0 {
+                input_state.pop_front();
+                timeout_count -= 1;
             }
         }
     }
