@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+#![windows_subsystem = "windows"]
 
 use config::Config;
 use log::{error, info};
@@ -16,22 +17,24 @@ use std::time::{Duration, Instant};
 use windows::{
     core::*,
     Win32::Foundation::*,
-    Win32::System::LibraryLoader::GetModuleHandleW,
+    Win32::System::LibraryLoader::GetModuleHandleA,
     Win32::UI::Shell::*,
     Win32::UI::WindowsAndMessaging::{
-        self, AppendMenuW, CallNextHookEx, CreatePopupMenu, DestroyMenu, GetMessageW,
-        PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowsHookExW, TrackPopupMenu,
-        UnhookWindowsHookEx, HC_ACTION, HHOOK, IMAGE_ICON, KBDLLHOOKSTRUCT, LR_LOADFROMFILE, MSG,
-        WH_KEYBOARD_LL, WM_APP, WM_COMMAND, WM_DESTROY, WM_KEYDOWN, WM_RBUTTONUP, WNDCLASSW,
+        self, AppendMenuA, CallNextHookEx, CreatePopupMenu, DestroyMenu, GetMessageA,
+        PostQuitMessage, RegisterClassA, SetForegroundWindow, SetWindowsHookExA, TrackPopupMenu,
+        UnhookWindowsHookEx, HC_ACTION, HHOOK, IMAGE_CURSOR, IMAGE_ICON, KBDLLHOOKSTRUCT,
+        LR_DEFAULTSIZE, LR_LOADFROMFILE, LR_SHARED, MSG, WH_KEYBOARD_LL, WM_APP, WM_COMMAND,
+        WM_DESTROY, WM_KEYDOWN, WM_RBUTTONUP, WNDCLASSA,
     },
 };
 
 const CONFIG_FILE: &str = "config/config.toml";
 const LOG_CONFIG_FILE: &str = "config/log4rs.yaml";
-const TRAY_ICON_FILE: &str = "resource/barcode.ico";
 
-// 托盘图标相关
-const TRAY_ICON_TOOLTIP: &str = "ClearScannerMonitor";
+// 需以\0结尾
+const TRAY_ICON_FILE: &str = "resource/barcode.ico\0";
+const TRAY_ICON_TOOLTIP: &str = "ClearScannerMonitor\0";
+
 const WM_TRAYICON: u32 = WM_APP + 1;
 const ID_TRAY_APP: u32 = 1001;
 const ID_EXIT: u32 = 2001;
@@ -161,11 +164,11 @@ unsafe extern "system" fn window_proc(
                 let mut point = POINT::default();
                 if let Ok(()) = WindowsAndMessaging::GetCursorPos(&mut point) {
                     let hmenu = CreatePopupMenu().unwrap();
-                    AppendMenuW(
+                    AppendMenuA(
                         hmenu,
                         WindowsAndMessaging::MF_STRING,
                         ID_EXIT as usize,
-                        PCWSTR(b"Exit\0".as_ptr().cast()),
+                        PCSTR(b"Exit\0".as_ptr()),
                     )
                     .unwrap();
 
@@ -195,30 +198,26 @@ unsafe extern "system" fn window_proc(
         WM_DESTROY => {
             PostQuitMessage(0);
         }
-        _ => return WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => return WindowsAndMessaging::DefWindowProcA(hwnd, msg, wparam, lparam),
     }
     LRESULT(0)
 }
 
 fn load_icon_from_file() -> windows::core::Result<WindowsAndMessaging::HICON> {
-    let wide_file_path: Vec<u16> = TRAY_ICON_FILE
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let hicon = unsafe {
-        WindowsAndMessaging::LoadImageW(
-            None, //HINSTANCE::default()
-            PCWSTR(wide_file_path.as_ptr()),
+    let hicon_handle = unsafe {
+        WindowsAndMessaging::LoadImageA(
+            None,
+            PCSTR(TRAY_ICON_FILE.as_bytes().as_ptr()),
             IMAGE_ICON,
             0,
             0,
             LR_LOADFROMFILE,
         )?
     };
-    if hicon.is_null() {
+    if hicon_handle.is_invalid() {
         Err(windows::core::Error::from_win32())
     } else {
-        Ok(hicon)
+        Ok(WindowsAndMessaging::HICON(hicon_handle.0))
     }
 }
 
@@ -264,8 +263,8 @@ fn main() -> windows::core::Result<()> {
     });
 
     unsafe {
-        let h_instance = GetModuleHandleW(None)?;
-        let hook_id = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), h_instance, 0)?;
+        let h_instance = GetModuleHandleA(None)?;
+        let hook_id = SetWindowsHookExA(WH_KEYBOARD_LL, Some(keyboard_proc), h_instance, 0)?;
 
         if hook_id.is_invalid() {
             error!("Failed to install hook: {:?}", GetLastError());
@@ -273,20 +272,30 @@ fn main() -> windows::core::Result<()> {
         }
 
         /* 托盘图标逻辑 */
-        let wnd_class = WNDCLASSW {
-            hCursor: WindowsAndMessaging::LoadCursorW(None, WindowsAndMessaging::IDC_ARROW)?,
+        let wnd_class = WNDCLASSA {
+            hCursor: WindowsAndMessaging::HCURSOR(
+                WindowsAndMessaging::LoadImageW(
+                    None,
+                    WindowsAndMessaging::IDC_ARROW,
+                    IMAGE_CURSOR,
+                    0,
+                    0,
+                    LR_DEFAULTSIZE | LR_SHARED,
+                )?
+                .0,
+            ),
             hInstance: h_instance.into(),
-            lpszClassName: PCWSTR(b"tray_window\0".as_ptr().cast()),
+            lpszClassName: PCSTR(b"tray_window\0".as_ptr()),
             lpfnWndProc: Some(window_proc),
             ..Default::default()
         };
 
-        RegisterClassW(&wnd_class);
+        RegisterClassA(&wnd_class);
 
-        let hwnd = WindowsAndMessaging::CreateWindowExW(
+        let hwnd = WindowsAndMessaging::CreateWindowExA(
             Default::default(),
-            PCWSTR(b"tray_window\0".as_ptr().cast()),
-            PCWSTR(b"Tray Window\0".as_ptr().cast()),
+            PCSTR(b"tray_window\0".as_ptr()),
+            PCSTR(b"Tray Window\0".as_ptr()),
             WindowsAndMessaging::WS_OVERLAPPEDWINDOW,
             WindowsAndMessaging::CW_USEDEFAULT,
             WindowsAndMessaging::CW_USEDEFAULT,
@@ -298,34 +307,33 @@ fn main() -> windows::core::Result<()> {
             Some(std::ptr::null()),
         );
 
-        let mut nid = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        let mut nid = NOTIFYICONDATAA {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAA>() as u32,
             hWnd: hwnd,
             uID: ID_TRAY_APP,
             uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage: WM_TRAYICON,
             hIcon: load_icon_from_file()?,
             szTip: {
-                let mut wide: Vec<u16> = TRAY_ICON_TOOLTIP.encode_utf16().collect();
-                wide.push(0); // null-terminate the string
-                let mut wide_array: [u16; 128] = [0; 128];
-                wide_array[..wide.len()].copy_from_slice(&wide);
-                wide_array
+                let bytes = TRAY_ICON_TOOLTIP.as_bytes();
+                let mut array: [u8; 128] = [0; 128];
+                array[..bytes.len()].copy_from_slice(bytes);
+                array
             },
             ..Default::default()
         };
 
-        Shell_NotifyIconW(NIM_ADD, &mut nid);
+        Shell_NotifyIconA(NIM_ADD, &mut nid);
 
         // The thread that installed the hook must have a message loop
         let mut msg: MSG = MSG::default();
-        while GetMessageW(&mut msg, HWND(0), 0, 0).into() {
+        while GetMessageA(&mut msg, HWND(0), 0, 0).into() {
             WindowsAndMessaging::TranslateMessage(&msg);
-            WindowsAndMessaging::DispatchMessageW(&msg);
+            WindowsAndMessaging::DispatchMessageA(&msg);
         }
 
         UnhookWindowsHookEx(hook_id)?;
-        Shell_NotifyIconW(NIM_DELETE, &mut nid);
+        Shell_NotifyIconA(NIM_DELETE, &mut nid);
     }
 
     Ok(())
