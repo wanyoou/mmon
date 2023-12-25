@@ -18,6 +18,7 @@ use windows::{
     core::*,
     Win32::Foundation::*,
     Win32::System::LibraryLoader::GetModuleHandleA,
+    Win32::UI::Input::KeyboardAndMouse,
     Win32::UI::Shell::*,
     Win32::UI::WindowsAndMessaging::{
         self, AppendMenuA, CallNextHookEx, CreatePopupMenu, DestroyMenu, GetMessageA,
@@ -94,7 +95,27 @@ unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: L
 
     if (n_code as u32 == HC_ACTION) && (w_param.0 as u32 == WM_KEYDOWN) {
         let kb_struct = *(l_param.0 as *const KBDLLHOOKSTRUCT);
-        let key = kb_struct.vkCode as u8 as char;
+        let mut buffer = [0u16; 4];
+
+        let mut key = '\0';
+        if KeyboardAndMouse::ToUnicodeEx(
+            kb_struct.vkCode,
+            kb_struct.scanCode,
+            &[0u8; 256],
+            &mut buffer,
+            0,
+            KeyboardAndMouse::GetKeyboardLayout(0),
+        ) > 0
+        {
+            if let Ok(s) = String::from_utf16(&buffer) {
+                key = s.chars().next().unwrap();
+            }
+        }
+
+        if key == '\0' {
+            key = kb_struct.vkCode as u8 as char;
+        }
+
         let mut input_state = INPUT_STATE.lock().unwrap();
 
         // 是否已经创建了新实例
